@@ -24,20 +24,23 @@ st.markdown("""
 def init_connection():
     """
     Inicializa la conexión. Busca primero en los secretos de Streamlit (Cloud)
-    y si falla, usa el .env local. Ingeniería a prueba de fallos.
+    y si falla (por cualquier razón), usa el .env local. Ingeniería a prueba de fallos.
     """
+    url = None
+    key = None
+    
     try:
         # Intento 1: Streamlit Cloud Secrets
         url = st.secrets["SUPABASE_URL"]
         key = st.secrets["SUPABASE_KEY"]
-    except FileNotFoundError:
+    except (FileNotFoundError, KeyError):
         # Intento 2: Entorno local (.env)
         load_dotenv()
         url = os.environ.get("SUPABASE_URL")
         key = os.environ.get("SUPABASE_KEY")
     
     if not url or not key:
-        st.error("🚨 Faltan las credenciales de Supabase.")
+        st.error("🚨 Faltan las credenciales de Supabase. Configúralas en Streamlit Secrets o en tu .env local.")
         st.stop()
         
     return create_client(url, key)
