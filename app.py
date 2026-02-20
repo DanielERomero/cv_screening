@@ -1,93 +1,149 @@
 import streamlit as st
-from supabase import create_client, Client
+import pdfplumber
+import json
 import os
 from dotenv import load_dotenv
+from supabase import create_client, Client
+from openai import OpenAI
 
 # ==========================================
-# 1. CONFIGURACIÓN DE PÁGINA
+# 1. CONFIGURACIÓN E INICIALIZACIÓN
 # ==========================================
-st.set_page_config(
-    page_title="AI Resume Screener",
-    page_icon="🤖",
-    layout="wide"
-)
+st.set_page_config(page_title="AI Resume Screener", page_icon="🚀", layout="wide")
 
-st.title("📊 Panel de Selección Automática (XAI-Powered)")
-st.markdown("""
-*Motor de evaluación impulsado por LLM local (Privacy-First). Evalúa candidatos con explicabilidad total.*
-""")
-
-# ==========================================
-# 2. CONEXIÓN A SUPABASE (Local y Cloud)
-# ==========================================
 @st.cache_resource
-def init_connection():
-    """
-    Inicializa la conexión. Busca primero en los secretos de Streamlit (Cloud)
-    y si falla (por cualquier razón), usa el .env local. Ingeniería a prueba de fallos.
-    """
-    url = None
-    key = None
-    
+def init_connections():
+    """Inicializa Supabase y el cliente LLM (GitHub Models) a prueba de fallos."""
     try:
         # Intento 1: Streamlit Cloud Secrets
-        url = st.secrets["SUPABASE_URL"]
-        key = st.secrets["SUPABASE_KEY"]
+        supa_url = st.secrets["SUPABASE_URL"]
+        supa_key = st.secrets["SUPABASE_KEY"]
+        github_token = st.secrets["GITHUB_TOKEN"]
     except (FileNotFoundError, KeyError):
         # Intento 2: Entorno local (.env)
         load_dotenv()
-        url = os.environ.get("SUPABASE_URL")
-        key = os.environ.get("SUPABASE_KEY")
+        supa_url = os.environ.get("SUPABASE_URL")
+        supa_key = os.environ.get("SUPABASE_KEY")
+        github_token = os.environ.get("GITHUB_TOKEN")
     
-    if not url or not key:
-        st.error("🚨 Faltan las credenciales de Supabase. Configúralas en Streamlit Secrets o en tu .env local.")
+    if not supa_url or not supa_key or not github_token:
+        st.error("🚨 Faltan credenciales. Verifica Supabase URL/KEY y GITHUB_TOKEN.")
         st.stop()
         
-    return create_client(url, key)
+    # Cliente Supabase
+    db_client = create_client(supa_url, supa_key)
+    
+    # Cliente LLM (Usando la librería de OpenAI apuntando a GitHub Models)
+    llm_client = OpenAI(
+        base_url="https://models.inference.ai.azure.com",
+        api_key=github_token,
+    )
+    
+    return db_client, llm_client
 
-supabase = init_connection()
+supabase, llm = init_connections()
+MODELO_NUBE = "gpt-4.1"
 
 # ==========================================
-# 3. EXTRACCIÓN Y VISUALIZACIÓN DE DATOS
+# 2. FUNCIONES CORE (NLP & LLM)
 # ==========================================
-def load_data():
-    # Traemos los candidatos ordenados por el mejor score
-    respuesta = supabase.table("candidatos_evaluados").select("*").order("score", desc=True).execute()
-    return respuesta.data
+def extraer_texto_en_memoria(archivo_pdf) -> str:
+    """Extrae texto del PDF directo desde la memoria RAM."""
+    texto = ""
+    try:
+        with pdfplumber.open(archivo_pdf) as pdf:
+            for pagina in pdf.pages:
+                extraido = pagina.extract_text()
+                if extraido:
+                    texto += extraido + "\n"
+        return texto.strip()
+    except Exception as e:
+        st.error(f"Error al leer el PDF: {e}")
+        return ""
 
-candidatos = load_data()
+def interactuar_con_gpt(prompt: str, rol_sistema: str) -> dict:
+    """Habla con GPT-4o vía GitHub y garantiza un JSON estructurado."""
+    try:
+        response = llm.chat.completions.create(
+            messages=[
+                {"role": "system", "content": rol_sistema},
+                {"role": "user", "content": prompt}
+            ],
+            model=MODELO_NUBE,
+            temperature=0.1, # Temperatura baja para que sea analítico, no creativo
+            response_format={"type": "json_object"} # Forzamos la salida a JSON puro
+        )
+        # Extraemos y parseamos el JSON de la respuesta
+        contenido = response.choices[0].message.content
+        return json.loads(contenido)
+    except Exception as e:
+        st.error(f"Error en la inferencia con GPT-4o: {e}")
+        return {}
 
-if not candidatos:
-    st.info("No hay candidatos evaluados en la base de datos. Pasa un CV por el motor de procesamiento primero.")
-else:
-    # Métricas rápidas estilo ejecutivo
-    total_cands = len(candidatos)
-    aptos = sum(1 for c in candidatos if c.get('decision', '').lower() == 'apto')
-    
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total de Candidatos", total_cands)
-    col2.metric("Candidatos Aptos", aptos)
-    col3.metric("Tasa de Aprobación", f"{(aptos/total_cands)*100:.1f}%")
-    
-    st.divider()
+# ==========================================
+# 3. INTERFAZ DE USUARIO (FRONTEND)
+# ==========================================
+st.title("☁️ Sistema de Selección Automatizada (GPT-4o & Supabase)")
+st.markdown("Sube un CV, define el Job Spec y deja que la IA evalúe la compatibilidad con explicabilidad total.")
 
-    # Listado de candidatos con foco en el "Porqué" (Explainable AI)
-    st.subheader("📋 Resultados del Screening")
-    
-    for cand in candidatos:
-        score = cand.get('score', 0)
-        decision = cand.get('decision', 'Desconocido')
-        nombre = cand.get('nombre_candidato', 'Sin Nombre')
-        
-        # Color coding simple
-        color = "🟢" if decision.lower() == 'apto' else "🔴"
-        
-        with st.expander(f"{color} {nombre} - Score: {score}/100"):
-            st.markdown(f"**Decisión de la IA:** `{decision}`")
+col1, col2 = st.columns([1, 1])
+
+with col1:
+    st.subheader("1. Requerimientos del Puesto (Job Spec)")
+    job_spec = st.text_area(
+        "Ingresa las habilidades y requisitos:",
+        height=200,
+        placeholder="Ej: Buscamos un Data Scientist con 3 años de experiencia en Python..."
+    )
+
+with col2:
+    st.subheader("2. Currículum del Candidato")
+    archivo_subido = st.file_uploader("Sube el CV (PDF)", type=["pdf"])
+
+if st.button("Ejecutar Motor de Evaluación", type="primary", use_container_width=True):
+    if not job_spec or not archivo_subido:
+        st.warning("⚠️ Ingresa el Job Spec y sube un CV.")
+    else:
+        with st.spinner("⏳ Moliendo datos: Extrayendo texto..."):
+            texto_cv = extraer_texto_en_memoria(archivo_subido)
             
-            # Aquí está el corazón de tu tesis: La transparencia
-            st.info(f"**Justificación Técnica:**\n\n{cand.get('razonamiento', 'No hay justificación.')}")
+        if texto_cv:
+            with st.spinner("🧠 Percolación Semántica: Estructurando CV con GPT-4o..."):
+                sys_prompt_estructura = "Eres un asistente experto en RRHH. Debes extraer información de currículums y responder ÚNICAMENTE en formato JSON con las claves: 'nombre', 'email', 'habilidades' (array), 'experiencia_años' (número)."
+                prompt_estructura = f"Extrae los datos de este CV:\n{texto_cv}"
+                
+                cv_json = interactuar_con_gpt(prompt_estructura, sys_prompt_estructura)
             
-            # Mostrar los datos estructurados en formato crudo para auditoría
-            with st.popover("Ver JSON del CV extraído"):
-                st.json(cand.get('datos_cv', {}))
+            with st.spinner("⚖️ Análisis Profundo: Evaluando compatibilidad..."):
+                sys_prompt_eval = "Eres un evaluador técnico imparcial. Responde ÚNICAMENTE en JSON con las claves: 'score' (0-100), 'decision' ('Apto' o 'No Apto'), y 'razonamiento' (explicación técnica y neutral para evitar sesgos, justificando qué hace match y qué falta)."
+                prompt_evaluacion = f"Compara este candidato con los requerimientos.\nCandidato: {json.dumps(cv_json)}\nJob Spec: {job_spec}"
+                
+                evaluacion = interactuar_con_gpt(prompt_evaluacion, sys_prompt_eval)
+            
+            with st.spinner("💾 Guardando resultados en Supabase..."):
+                data_insercion = {
+                    "nombre_candidato": cv_json.get("nombre", "Desconocido"),
+                    "datos_cv": cv_json,
+                    "score": evaluacion.get("score", 0),
+                    "decision": evaluacion.get("decision", "Error"),
+                    "razonamiento": evaluacion.get("razonamiento", "Sin razón")
+                }
+                supabase.table("candidatos_evaluados").insert(data_insercion).execute()
+            
+            # ==========================================
+            # 4. RESULTADOS (XAI)
+            # ==========================================
+            st.success("✅ Análisis completado. Datos persistidos en la nube.")
+            st.divider()
+            
+            st.subheader(f"Resultados para: {data_insercion['nombre_candidato']}")
+            m_col1, m_col2 = st.columns(2)
+            m_col1.metric("Score de Compatibilidad", f"{data_insercion['score']}/100")
+            
+            color = "green" if data_insercion['decision'].lower() == 'apto' else "red"
+            m_col2.markdown(f"**Decisión:** :{color}[{data_insercion['decision']}]")
+            
+            st.info(f"**Auditoría de Decisión (XAI):**\n\n{data_insercion['razonamiento']}")
+            
+            with st.expander("Ver JSON estructurado del CV"):
+                st.json(cv_json)
