@@ -83,7 +83,7 @@ def interactuar_con_gpt(prompt: str, rol_sistema: str) -> dict:
 # ==========================================
 # 3. INTERFAZ DE USUARIO (FRONTEND)
 # ==========================================
-st.title("☁️ Sistema de Selección Automatizada (GPT-4o & Supabase)")
+st.title("☁️ Sistema de Selección Automatizada")
 st.markdown("Sube un CV, define el Job Spec y deja que la IA evalúe la compatibilidad con explicabilidad total.")
 
 col1, col2 = st.columns([1, 1])
