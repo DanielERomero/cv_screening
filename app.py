@@ -143,9 +143,14 @@ if st.button("Ejecutar Motor de Evaluación", type="primary", use_container_widt
             
             st.subheader(f"Resultados para: {data_insercion['nombre_candidato']}")
             m_col1, m_col2 = st.columns(2)
-            m_col1.metric("Score de Compatibilidad", f"{data_insercion['score']}/100")
             
-            decision_lower = data_insercion['decision'].lower()
+            # 1. Score y 2. Nivel
+            score = evaluacion.get("score", 0)
+            nivel_str = evaluacion.get("nivel", "Error")
+            
+            m_col1.metric("Score de Compatibilidad", f"{score}/100")
+            
+            decision_lower = nivel_str.lower()
             if decision_lower in ["prioridad", "entrevistar"]:
                 color = "green"
             elif decision_lower == "considerar":
@@ -153,9 +158,19 @@ if st.button("Ejecutar Motor de Evaluación", type="primary", use_container_widt
             else:
                 color = "red"
                 
-            m_col2.markdown(f"**Nivel (Decisión):** :{color}[{data_insercion['decision']}]")
+            m_col2.markdown(f"**Nivel (Decisión):** :{color}[{nivel_str}]")
             
-            st.info(f"**Auditoría de Decisión (XAI):**\n\n{data_insercion['razonamiento']}")
+            # Mostrar los otros 3 campos en contenedores específicos
+            st.markdown("### Auditoría de Decisión (XAI)")
+            
+            # 3. Motivos de contratación (success box)
+            st.success(f"**🚀 Motivos de contratación:**\n\n{evaluacion.get('motivos_contratacion', 'No especificados.')}")
+            
+            # 4. Habilidades faltantes (warning box)
+            st.warning(f"**⚠️ Habilidades Faltantes:**\n\n{evaluacion.get('habilidades_faltantes', 'No especificadas.')}")
+            
+            # 5. Justificación (info box)
+            st.info(f"**📊 Justificación del Score:**\n\n{evaluacion.get('justificacion', 'No especificada.')}")
             
             with st.expander("Ver JSON estructurado del CV"):
                 st.json(cv_json)

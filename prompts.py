@@ -1,10 +1,43 @@
 import json
+from pydantic import BaseModel, Field, EmailStr
+from typing import List, Optional
+
+# ==========================================
+# 0. ESQUEMAS DE DATOS (Pydantic Models)
+# ==========================================
+
+class ExperienciaLaboral(BaseModel):
+    empresa: str = Field(description="Nombre de la compañía")
+    cargo: str = Field(description="Título del puesto ocupado")
+    duracion: str = Field(description="Rango de fechas o tiempo total")
+    descripcion: str = Field(description="Resumen de responsabilidades y logros")
+
+class Educacion(BaseModel):
+    institucion: str
+    titulo: str
+    anio: Optional[str] = None
+
+class CVSchema(BaseModel):
+    nombre_completo: Optional[str] = Field(None, description="Nombre y apellidos")
+    email: Optional[EmailStr] = None
+    telefono: Optional[str] = None
+    ubicacion: Optional[str] = None
+    linkedin: Optional[str] = None
+    resumen_profesional: Optional[str] = None
+    experiencia_laboral: List[ExperienciaLaboral]
+    educacion: List[Educacion]
+    habilidades_tecnicas: List[str]
+    habilidades_blandas: List[str]
+    idiomas: List[str]
+
+# Generamos el schema en formato JSON para el prompt
+json_schema_cv = json.dumps(CVSchema.model_json_schema(), ensure_ascii=False, indent=2)
 
 # ==========================================
 # 1. PROMPTS DEL SISTEMA (System Prompts)
 # ==========================================
 
-SYS_PROMPT_ESTRUCTURACION = """
+SYS_PROMPT_ESTRUCTURACION = f"""
 Eres un extractor especializado de información de CVs.
 Tu única función es extraer datos y devolverlos en el
 formato indicado. No evalúes, no opines, no inferas
@@ -19,25 +52,15 @@ Si un campo no está presente, devuelve null (no uses arrays vacíos para campos
 No inventes ninguna información ausente.
 
 RESTRICCIONES IMPORTANTES:
-1. RESPUESTA ESTRICTA: Tu respuesta debe ser SOLO un objeto JSON válido, comenzando con { y terminando con }. Nada de texto introductorio.
-2. El JSON DEBE usar EXACTAMENTE las siguientes llaves (no inventes nuevas ni cambies los nombres):
-   - nombre_completo (string o null)
-   - email (string o null)
-   - telefono (string o null)
-   - ubicacion (string o null)
-   - linkedin (string o null)
-   - resumen_profesional (string o null)
-   - experiencia_laboral (array de objetos con llaves: empresa, cargo, duracion, descripcion)
-   - educacion (array de objetos con llaves: institucion, titulo, anio)
-   - habilidades_tecnicas (array de strings)
-   - habilidades_blandas (array de strings)
-   - idiomas (array de strings)
+1. RESPUESTA ESTRICTA: Tu respuesta debe ser SOLO un objeto JSON válido, comenzando con {{ y terminando con }}. Nada de texto introductorio.
+2. El JSON DEBE cumplir estrictamente con el siguiente esquema JSON (JSON Schema), respetando llaves y jerarquías:
+{json_schema_cv}
 
 3. Escapa correctamente las comillas dobles internas (usa \\") o reemplázalas por comillas simples.
 4. Reemplaza los saltos de línea dentro de los textos por espacios o \\n.
 
 EJEMPLO PERFECTO:
-{
+{{
   "nombre_completo": "María García",
   "email": "maria.garcia@email.com",
   "telefono": "+51 987 654 321",
@@ -45,24 +68,24 @@ EJEMPLO PERFECTO:
   "linkedin": "linkedin.com/in/usuario",
   "resumen_profesional": "Profesional en analítica de datos...",
   "experiencia_laboral": [
-    {
+    {{
       "empresa": "Empresa SAC",
       "cargo": "Data Analyst",
       "duracion": "2021 - 2023",
       "descripcion": "Desarrollo de modelos predictivos..."
-    }
+    }}
   ],
   "educacion": [
-    {
+    {{
       "institucion": "UNMSM",
       "titulo": "Computación Científica",
       "anio": "2020"
-    }
+    }}
   ],
   "habilidades_tecnicas": ["Python", "Machine Learning"],
   "habilidades_blandas": ["Liderazgo"],
   "idiomas": ["Inglés intermedio"]
-}
+}}
 """.strip()
 
 SYS_PROMPT_EVALUACION = """
