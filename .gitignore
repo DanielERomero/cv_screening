@@ -1,21 +1,45 @@
-# Entornos virtuales
+# ========================
+# Variabes de Entorno y Secretos
+# ========================
+# NUNCA subir claves de Supabase, OpenAI, o GitHub
+.env
+*.env
+.env.local
+.streamlit/secrets.toml
+
+# ========================
+# Entornos Virtuales
+# ========================
 env_screening/
 venv/
 env/
-.env
+.venv/
 
-# Archivos de caché de Python
-__pycache__/
-*.pyc
-
-# Archivos con secretos y variables de entorno
-.env
-*.env
-
-# Documentos PDF (Ej: Currículums con datos confidenciales)
+# ========================
+# Archivos de Datos (Testing & Privacidad)
+# ========================
+# Evitar subir los CVs (son datos confidenciales)
 *.pdf
+# JSONs que generan los scripts de prueba test_estructuracion.py
+*_estructurado.json
 
-# Archivos de sistema operativo
+# ========================
+# Archivos de Caché de Python
+# ========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ========================
+# Editores e IDEs (VS Code, PyCharm, etc)
+# ========================
+.vscode/
+.idea/
+*.swp
+
+# ========================
+# Sistema Operativo
+# ========================
 .DS_Store
 Thumbs.db
-.env 
+desktop.ini

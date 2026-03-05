@@ -4,6 +4,11 @@ import json
 import os
 from supabase import create_client, Client
 from dotenv import load_dotenv
+from openai import OpenAI
+from prompts import (
+    SYS_PROMPT_ESTRUCTURACION, SYS_PROMPT_EVALUACION,
+    get_user_prompt_estructuracion, get_user_prompt_evaluacion
+)
 # ==========================================
 # 1. CONFIGURACIÓN DEL ENTORNO
 # ==========================================
@@ -17,9 +22,18 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Configuración de Ollama
-OLLAMA_API_URL = "http://localhost:11434/api/generate"
-MODELO = "gpt-oss:120b-cloud" 
+# Configuración de OpenAI (GitHub Models)
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+
+if not GITHUB_TOKEN:
+    raise ValueError("Falta la variable GITHUB_TOKEN en el entorno o .env")
+
+llm_client = OpenAI(
+    base_url="https://models.inference.ai.azure.com",
+    api_key=GITHUB_TOKEN,
+)
+# Utilizamos el mismo modelo que en app.py
+MODELO_NUBE = "gpt-4o" 
 
 # ==========================================
 # 2. FUNCIONES CORE
@@ -42,54 +56,43 @@ def extraer_texto_pdf(ruta_pdf: str) -> str:
         print(f"[-] Error al extraer texto: {e}")
         return ""
 
-def interactuar_con_ollama(prompt: str, forzar_json: bool = True) -> dict:
+def interactuar_con_gpt(prompt: str, rol_sistema: str) -> dict:
     """
-    Fase de Percolación: Función genérica para hablar con Ollama sin intermediarios (Langchain).
+    Fase de Percolación: Función genérica para hablar con GPT-4o vía GitHub (igual que en app.py).
     """
-    payload = {
-        "model": MODELO,
-        "prompt": prompt,
-        "stream": False,
-        "format": "json" if forzar_json else ""
-    }
-    
     try:
-        response = requests.post(OLLAMA_API_URL, json=payload)
-        response.raise_for_status()
-        data = response.json()
-        if 'response' not in data:
-            print("[-] Respuesta inesperada de Ollama:", data)
-            return {}
-        try:
-            return json.loads(data['response'])
-        except Exception as e:
-            print(f"[-] Error al parsear JSON de Ollama: {e}")
-            return {}
+        response = llm_client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": rol_sistema},
+                {"role": "user", "content": prompt}
+            ],
+            model=MODELO_NUBE,
+            temperature=0.1, # Temperatura baja para que sea analítico, no creativo
+            response_format={"type": "json_object"} # Forzamos la salida a JSON puro
+        )
+        contenido = response.choices[0].message.content
+        return json.loads(contenido)
     except Exception as e:
-        print(f"[-] Error en la comunicación con Ollama: {e}")
+        print(f"[-] Error en la comunicación con OpenAI: {e}")
         return {}
 
 def estructurar_cv(texto_crudo: str) -> dict:
     """
-    Transforma el texto desordenado en un JSON estructurado.
+    Transforma el texto desordenado en un JSON estructurado usando OpenAI.
     """
-    prompt = f"""
-    Extrae la siguiente información del currículum proporcionado y devuélvela ESTRICTAMENTE en formato JSON.
-    Campos requeridos: "nombre", "email", "habilidades" (lista), "experiencia_años" (entero).
+    print(f"[*] Estructurando CV con OpenAI ({MODELO_NUBE})...")
     
-    Currículum:
-    {texto_crudo}
-    """
-    print("[*] Estructurando CV con Ollama...")
-    resultado = interactuar_con_ollama(prompt)
+    prompt = get_user_prompt_estructuracion(texto_crudo)
+    resultado = interactuar_con_gpt(prompt, SYS_PROMPT_ESTRUCTURACION)
+    
     # Validación básica de campos requeridos
-    if not resultado or not all(k in resultado for k in ["nombre", "email", "habilidades", "experiencia_años"]):
-        print("[-] Faltan campos requeridos en la respuesta de Ollama.")
+    if not resultado or "nombre_completo" not in resultado:
+        print("[-] Faltan campos requeridos en la respuesta de OpenAI.")
         return {
-            "nombre": "Desconocido",
+            "nombre_completo": "Desconocido",
             "email": "",
-            "habilidades": [],
-            "experiencia_años": 0
+            "experiencia_laboral": [],
+            "habilidades_tecnicas": []
         }
     return resultado
 
@@ -98,25 +101,18 @@ def evaluar_candidato(cv_json: dict, job_spec: str) -> dict:
     El núcleo de la IA: Compara el CV estructurado con los requerimientos del puesto.
     Aquí garantizamos la transparencia (el "porqué").
     """
-    prompt = f"""
-    Eres un evaluador técnico imparcial. Compara el perfil del candidato con los requerimientos del puesto.
-    Candidato (JSON): {json.dumps(cv_json)}
-    Requerimientos del Puesto: {job_spec}
+    print(f"[*] Evaluando candidato frente al Job Spec con OpenAI ({MODELO_NUBE})...")
     
-    Evalúa y responde ESTRICTAMENTE en formato JSON con la siguiente estructura:
-    - "score": un número entero de 0 a 100 indicando la compatibilidad.
-    - "decision": "Apto" o "No Apto" (Apto si el score es >= 75).
-    - "razonamiento": Una explicación breve y técnica de por qué se asignó ese score, destacando qué hace match y qué falta. Evita cualquier sesgo discriminatorio.
-    """
-    print("[*] Evaluando candidato frente al Job Spec...")
-    resultado = interactuar_con_ollama(prompt)
+    prompt = get_user_prompt_evaluacion(json.dumps(cv_json), job_spec)
+    resultado = interactuar_con_gpt(prompt, SYS_PROMPT_EVALUACION)
+    
     # Validación básica de campos requeridos
-    if not resultado or not all(k in resultado for k in ["score", "decision", "razonamiento"]):
-        print("[-] Faltan campos requeridos en la evaluación de Ollama.")
+    if not resultado or "nivel" not in resultado:
+        print("[-] Faltan campos requeridos en la evaluación de OpenAI.")
         return {
             "score": 0,
-            "decision": "Error",
-            "razonamiento": "No se pudo obtener una evaluación válida."
+            "nivel": "Error",
+            "justificacion": "No se pudo obtener una evaluación válida."
         }
     return resultado
 
@@ -139,14 +135,20 @@ def procesar_candidato(ruta_pdf: str, job_spec: str):
     print(f"[+] Score obtenido: {evaluacion.get('score')} - {evaluacion.get('decision')}")
     print(f"[+] Razón: {evaluacion.get('razonamiento')}")
     
-    # 4. Guardado en Supabase (Simulando 2 tablas o un JSONB)
+    # 4. Guardar en Supabase (Simulando 2 tablas o un JSONB)
     try:
+        # Unificamos los textos generados por tu prompt para insertarlo en tu esquema original "razonamiento"
+        texto_razonamiento = (
+            f"**Justificación:** {evaluacion.get('justificacion', '')}\n\n"
+            f"**Motivos de contratación:** {evaluacion.get('motivos_contratacion', '')}\n\n"
+            f"**Habilidades Faltantes:** {evaluacion.get('habilidades_faltantes', '')}"
+        )
         data_insercion = {
-            "nombre_candidato": cv_estructurado.get("nombre", "Sin Nombre"),
+            "nombre_candidato": cv_estructurado.get("nombre_completo", "Sin Nombre"),
             "datos_cv": cv_estructurado,
             "score": evaluacion.get("score", 0),
-            "decision": evaluacion.get("decision", "Error"),
-            "razonamiento": evaluacion.get("razonamiento", "Sin razón")
+            "decision": evaluacion.get("nivel", "Error"),
+            "razonamiento": texto_razonamiento
         }
         
         # Asumiendo que tienes una tabla llamada 'candidatos_evaluados'

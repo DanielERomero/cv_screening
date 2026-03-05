@@ -5,6 +5,10 @@ import os
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from openai import OpenAI
+from prompts import (
+    SYS_PROMPT_ESTRUCTURACION, SYS_PROMPT_EVALUACION,
+    get_user_prompt_estructuracion, get_user_prompt_evaluacion
+)
 
 # ==========================================
 # 1. CONFIGURACIÓN E INICIALIZACIÓN
@@ -109,24 +113,25 @@ if st.button("Ejecutar Motor de Evaluación", type="primary", use_container_widt
             
         if texto_cv:
             with st.spinner("🧠 Percolación Semántica: Estructurando CV con GPT-4o..."):
-                sys_prompt_estructura = "Eres un asistente experto en RRHH. Debes extraer información de currículums y responder ÚNICAMENTE en formato JSON con las claves: 'nombre', 'email', 'habilidades' (array), 'experiencia_años' (número)."
-                prompt_estructura = f"Extrae los datos de este CV:\n{texto_cv}"
-                
-                cv_json = interactuar_con_gpt(prompt_estructura, sys_prompt_estructura)
+                prompt_estructura = get_user_prompt_estructuracion(texto_cv)
+                cv_json = interactuar_con_gpt(prompt_estructura, SYS_PROMPT_ESTRUCTURACION)
             
             with st.spinner("⚖️ Análisis Profundo: Evaluando compatibilidad..."):
-                sys_prompt_eval = "Eres un evaluador técnico imparcial. Responde ÚNICAMENTE en JSON con las claves: 'score' (0-100), 'decision' ('Apto' o 'No Apto'), y 'razonamiento' (explicación técnica y neutral para evitar sesgos, justificando qué hace match y qué falta)."
-                prompt_evaluacion = f"Compara este candidato con los requerimientos.\nCandidato: {json.dumps(cv_json)}\nJob Spec: {job_spec}"
-                
-                evaluacion = interactuar_con_gpt(prompt_evaluacion, sys_prompt_eval)
+                prompt_evaluacion = get_user_prompt_evaluacion(json.dumps(cv_json), job_spec)
+                evaluacion = interactuar_con_gpt(prompt_evaluacion, SYS_PROMPT_EVALUACION)
             
             with st.spinner("💾 Guardando resultados en Supabase..."):
+                texto_razonamiento = (
+                    f"**Justificación:** {evaluacion.get('justificacion', '')}\n\n"
+                    f"**Motivos de contratación:** {evaluacion.get('motivos_contratacion', '')}\n\n"
+                    f"**Habilidades Faltantes:** {evaluacion.get('habilidades_faltantes', '')}"
+                )
                 data_insercion = {
-                    "nombre_candidato": cv_json.get("nombre", "Desconocido"),
+                    "nombre_candidato": cv_json.get("nombre_completo", "Desconocido"),
                     "datos_cv": cv_json,
                     "score": evaluacion.get("score", 0),
-                    "decision": evaluacion.get("decision", "Error"),
-                    "razonamiento": evaluacion.get("razonamiento", "Sin razón")
+                    "decision": evaluacion.get("nivel", "Error"),
+                    "razonamiento": texto_razonamiento
                 }
                 supabase.table("candidatos_evaluados").insert(data_insercion).execute()
             
@@ -140,8 +145,15 @@ if st.button("Ejecutar Motor de Evaluación", type="primary", use_container_widt
             m_col1, m_col2 = st.columns(2)
             m_col1.metric("Score de Compatibilidad", f"{data_insercion['score']}/100")
             
-            color = "green" if data_insercion['decision'].lower() == 'apto' else "red"
-            m_col2.markdown(f"**Decisión:** :{color}[{data_insercion['decision']}]")
+            decision_lower = data_insercion['decision'].lower()
+            if decision_lower in ["prioridad", "entrevistar"]:
+                color = "green"
+            elif decision_lower == "considerar":
+                color = "orange"
+            else:
+                color = "red"
+                
+            m_col2.markdown(f"**Nivel (Decisión):** :{color}[{data_insercion['decision']}]")
             
             st.info(f"**Auditoría de Decisión (XAI):**\n\n{data_insercion['razonamiento']}")
             
