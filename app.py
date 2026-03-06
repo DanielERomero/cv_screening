@@ -26,6 +26,7 @@ def init_connections():
     except (FileNotFoundError, KeyError):
         # Intento 2: Entorno local (.env)
         load_dotenv()
+        
         supa_url = os.environ.get("SUPABASE_URL")
         supa_key = os.environ.get("SUPABASE_KEY")
         github_token = os.environ.get("GITHUB_TOKEN")
@@ -74,7 +75,7 @@ def interactuar_con_gpt(prompt: str, rol_sistema: str) -> dict:
                 {"role": "user", "content": prompt}
             ],
             model=MODELO_NUBE,
-            temperature=0.1, # Temperatura baja para que sea analítico, no creativo
+            temperature=0, # Temperatura baja para que sea analítico, no creativo
             response_format={"type": "json_object"} # Forzamos la salida a JSON puro
         )
         # Extraemos y parseamos el JSON de la respuesta

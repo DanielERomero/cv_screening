@@ -30,8 +30,16 @@ class CVSchema(BaseModel):
     habilidades_blandas: List[str]
     idiomas: List[str]
 
-# Generamos el schema en formato JSON para el prompt
+class EvaluacionSchema(BaseModel):
+    score: int = Field(description="Puntuación total de 0 a 100")
+    nivel: str = Field(description="Nivel de recomendación: Descartar, Considerar, Entrevistar, o Prioridad")
+    motivos_contratacion: str = Field(description="Explicar en 2-3 oraciones por qué DEBERÍA ser contratado. Qué aporta al equipo.")
+    habilidades_faltantes: str = Field(description="Listar las habilidades o experiencias que le FALTAN para el puesto.")
+    justificacion: str = Field(description="Explicar en 3-4 oraciones POR QUÉ se asignó ese puntaje. Ser específico.")
+
+# Generamos los schemas en formato JSON para los prompts
 json_schema_cv = json.dumps(CVSchema.model_json_schema(), ensure_ascii=False, indent=2)
+json_schema_evaluacion = json.dumps(EvaluacionSchema.model_json_schema(), ensure_ascii=False, indent=2)
 
 # ==========================================
 # 1. PROMPTS DEL SISTEMA (System Prompts)
@@ -88,7 +96,7 @@ EJEMPLO PERFECTO:
 }}
 """.strip()
 
-SYS_PROMPT_EVALUACION = """
+SYS_PROMPT_EVALUACION = f"""
 Eres un evaluador experto en selección de talento con
 15 años de experiencia en RRHH técnico. Evalúas candidatos
 de forma objetiva, basándote exclusivamente en criterios
@@ -139,15 +147,19 @@ RESTRICCIONES:
   81-100 → prioridad
 
 FORMATO DE RESPUESTA:
-{
+Tu respuesta debe ser SOLO un objeto JSON válido, comenzando con {{ y terminando con }}. El JSON DEBE cumplir estrictamente con el siguiente esquema JSON (JSON Schema):
+{json_schema_evaluacion}
+
+EJEMPLO DE RESPUESTA:
+{{
   "score": 75,
   "nivel": "Entrevistar",
-  "motivos_contratacion": "Explicar en 2-3 oraciones por qué DEBERÍA ser contratado. Qué aporta al equipo.",
-  "habilidades_faltantes": "Listar las habilidades o experiencias que le FALTAN para el puesto.",
-  "justificacion": "Explicar en 3-4 oraciones POR QUÉ se asignó ese puntaje. Ser específico."
-}
+  "motivos_contratacion": "Experiencia sólida que encaja con el rol requerido, destacando en proyectos importantes.",
+  "habilidades_faltantes": "Falta experiencia demostrable en el manejo de ciertas herramientas cloud.",
+  "justificacion": "El candidato cumple con el 80% de los requisitos y tiene experiencia relevante. Se penaliza por la ausencia de experiencia en cloud computing."
+}}
 
-Niveles: 0-40 Descartar | 41-60 Considerar | 61-80 Entrevistar | 81-100 Prioridad
+Niveles referenciales: 0-40 Descartar | 41-60 Considerar | 61-80 Entrevistar | 81-100 Prioridad
 """.strip()
 
 
