@@ -1,5 +1,6 @@
 import streamlit as st
 import pdfplumber
+import hashlib
 import json
 import os
 from dotenv import load_dotenv
@@ -52,19 +53,21 @@ MODELO_NUBE = "gpt-4.1"
 # ==========================================
 # 2. FUNCIONES CORE (NLP & LLM)
 # ==========================================
-def extraer_texto_en_memoria(archivo_pdf) -> str:
-    """Extrae texto del PDF directo desde la memoria RAM."""
+def extraer_texto_en_memoria(archivo_pdf) -> tuple[str, int]:
+    """Extrae texto y número de páginas del PDF desde memoria RAM."""
     texto = ""
+    num_paginas = 0
     try:
         with pdfplumber.open(archivo_pdf) as pdf:
+            num_paginas = len(pdf.pages)
             for pagina in pdf.pages:
                 extraido = pagina.extract_text()
                 if extraido:
                     texto += extraido + "\n"
-        return texto.strip()
+        return texto.strip(), num_paginas
     except Exception as e:
         st.error(f"Error al leer el PDF: {e}")
-        return ""
+        return "", 0
 
 def interactuar_con_gpt(prompt: str, rol_sistema: str) -> dict:
     """Habla con GPT-4o vía GitHub y garantiza un JSON estructurado."""
@@ -91,6 +94,11 @@ def interactuar_con_gpt(prompt: str, rol_sistema: str) -> dict:
 st.title("☁️ Sistema de Selección Automatizada")
 st.markdown("Sube un CV, define el Job Spec y deja que la IA evalúe la compatibilidad con explicabilidad total.")
 
+proceso_nombre = st.text_input(
+    "Nombre del proceso de selección",
+    placeholder="Ej: Data Engineer Q1 2026"
+)
+
 col1, col2 = st.columns([1, 1])
 
 with col1:
@@ -106,11 +114,11 @@ with col2:
     archivo_subido = st.file_uploader("Sube el CV (PDF)", type=["pdf"])
 
 if st.button("Ejecutar Motor de Evaluación", type="primary", use_container_width=True):
-    if not job_spec or not archivo_subido:
-        st.warning("⚠️ Ingresa el Job Spec y sube un CV.")
+    if not proceso_nombre or not job_spec or not archivo_subido:
+        st.warning("⚠️ Completa el nombre del proceso, el Job Spec y sube un CV.")
     else:
         with st.spinner("⏳ Moliendo datos: Extrayendo texto..."):
-            texto_cv = extraer_texto_en_memoria(archivo_subido)
+            texto_cv, num_paginas = extraer_texto_en_memoria(archivo_subido)
             
         if texto_cv:
             with st.spinner("🧠 Percolación Semántica: Estructurando CV con GPT-4o..."):
@@ -122,56 +130,84 @@ if st.button("Ejecutar Motor de Evaluación", type="primary", use_container_widt
                 evaluacion = interactuar_con_gpt(prompt_evaluacion, SYS_PROMPT_EVALUACION)
             
             with st.spinner("💾 Guardando resultados en Supabase..."):
-                texto_razonamiento = (
-                    f"**Justificación:** {evaluacion.get('justificacion', '')}\n\n"
-                    f"**Motivos de contratación:** {evaluacion.get('motivos_contratacion', '')}\n\n"
-                    f"**Habilidades Faltantes:** {evaluacion.get('habilidades_faltantes', '')}"
-                )
-                data_insercion = {
-                    "nombre_candidato": cv_json.get("nombre_completo", "Desconocido"),
-                    "datos_cv": cv_json,
-                    "score": evaluacion.get("score", 0),
-                    "decision": evaluacion.get("nivel", "Error"),
-                    "razonamiento": texto_razonamiento
-                }
-                supabase.table("candidatos_evaluados").insert(data_insercion).execute()
-            
+                # Bronze — PDF crudo
+                archivo_subido.seek(0)
+                pdf_bytes = archivo_subido.read()
+                file_hash = hashlib.sha256(pdf_bytes).hexdigest()
+
+                resp_bronze = supabase.table("raw_cvs").insert({
+                    "proceso_nombre": proceso_nombre,
+                    "filename":       archivo_subido.name,
+                    "file_hash":      file_hash,
+                    "texto_crudo":    texto_cv,
+                    "num_paginas":    num_paginas,
+                    "tamanio_bytes":  len(pdf_bytes),
+                }).execute()
+                raw_cv_id = resp_bronze.data[0]["id"]
+
+                # Silver — CV estructurado
+                resp_silver = supabase.table("cv_estructurados").insert({
+                    "raw_cv_id":             raw_cv_id,
+                    "nombre_candidato":      cv_json.get("nombre_candidato"),
+                    "email":                 cv_json.get("email"),
+                    "telefono":              cv_json.get("telefono"),
+                    "ubicacion":             cv_json.get("ubicacion"),
+                    "resumen_perfil":        cv_json.get("resumen_perfil"),
+                    "experiencia_anios":     cv_json.get("experiencia_anios"),
+                    "ultimo_cargo":          cv_json.get("ultimo_cargo"),
+                    "ultima_empresa":        cv_json.get("ultima_empresa"),
+                    "educacion_nivel":       cv_json.get("educacion_nivel"),
+                    "educacion_carrera":     cv_json.get("educacion_carrera"),
+                    "educacion_institucion": cv_json.get("educacion_institucion"),
+                    "skills_tecnicos":       cv_json.get("skills_tecnicos", []),
+                    "idiomas":               cv_json.get("idiomas", []),
+                    "experiencia_detalle":   cv_json.get("experiencia_detalle", []),
+                    "educacion_detalle":     cv_json.get("educacion_detalle", []),
+                }).execute()
+                cv_estructurado_id = resp_silver.data[0]["id"]
+
+                # Gold — Evaluación
+                supabase.table("evaluaciones").insert({
+                    "cv_estructurado_id":    cv_estructurado_id,
+                    "score_total":           evaluacion.get("score_total", 0),
+                    "recomendacion":         evaluacion.get("recomendacion", "descartar"),
+                    "justificacion_general": evaluacion.get("justificacion_general"),
+                    "fortalezas":            evaluacion.get("fortalezas", []),
+                    "brechas":               evaluacion.get("brechas", []),
+                }).execute()
+
             # ==========================================
             # 4. RESULTADOS (XAI)
             # ==========================================
             st.success("✅ Análisis completado. Datos persistidos en la nube.")
             st.divider()
-            
-            st.subheader(f"Resultados para: {data_insercion['nombre_candidato']}")
+
+            nombre_candidato = cv_json.get("nombre_candidato", "Desconocido")
+            st.subheader(f"Resultados para: {nombre_candidato}")
             m_col1, m_col2 = st.columns(2)
-            
-            # 1. Score y 2. Nivel
-            score = evaluacion.get("score", 0)
-            nivel_str = evaluacion.get("nivel", "Error")
-            
+
+            score         = evaluacion.get("score_total", 0)
+            recomendacion = evaluacion.get("recomendacion", "descartar")
+
             m_col1.metric("Score de Compatibilidad", f"{score}/100")
-            
-            decision_lower = nivel_str.lower()
-            if decision_lower in ["prioridad", "entrevistar"]:
+
+            if recomendacion in ["prioridad", "entrevistar"]:
                 color = "green"
-            elif decision_lower == "considerar":
+            elif recomendacion == "considerar":
                 color = "orange"
             else:
                 color = "red"
-                
-            m_col2.markdown(f"**Nivel (Decisión):** :{color}[{nivel_str}]")
-            
-            # Mostrar los otros 3 campos en contenedores específicos
+
+            m_col2.markdown(f"**Nivel (Decisión):** :{color}[{recomendacion.capitalize()}]")
+
             st.markdown("### Auditoría de Decisión (XAI)")
-            
-            # 3. Motivos de contratación (success box)
-            st.success(f"**🚀 Motivos de contratación:**\n\n{evaluacion.get('motivos_contratacion', 'No especificados.')}")
-            
-            # 4. Habilidades faltantes (warning box)
-            st.warning(f"**⚠️ Habilidades Faltantes:**\n\n{evaluacion.get('habilidades_faltantes', 'No especificadas.')}")
-            
-            # 5. Justificación (info box)
-            st.info(f"**📊 Justificación del Score:**\n\n{evaluacion.get('justificacion', 'No especificada.')}")
-            
+
+            fortalezas = evaluacion.get("fortalezas", [])
+            brechas    = evaluacion.get("brechas", [])
+
+            st.success("**🚀 Fortalezas:**\n\n" + "\n".join(f"• {f}" for f in fortalezas))
+            st.warning("**⚠️ Brechas:**\n\n"    + "\n".join(f"• {b}" for b in brechas))
+            st.info(f"**📊 Justificación del Score:**\n\n{evaluacion.get('justificacion_general', 'No especificada.')}")
+
             with st.expander("Ver JSON estructurado del CV"):
                 st.json(cv_json)
