@@ -144,7 +144,7 @@ def procesar_candidato(ruta_pdf: str, job_spec: str, proceso_nombre: str = "Sin 
             pdf_bytes = f.read()
         file_hash = hashlib.sha256(pdf_bytes).hexdigest()
 
-        resp_bronze = supabase.table("bronze_raw_cvs").insert({
+        resp_bronze = supabase.schema("bronze").table("raw_cvs").insert({
             "proceso_nombre": proceso_nombre,
             "filename":       os.path.basename(ruta_pdf),
             "file_hash":      file_hash,
@@ -155,7 +155,7 @@ def procesar_candidato(ruta_pdf: str, job_spec: str, proceso_nombre: str = "Sin 
         raw_cv_id = resp_bronze.data[0]["id"]
 
         # Silver — CV estructurado
-        resp_silver = supabase.table("silver_cv_estructurados").insert({
+        resp_silver = supabase.schema("silver").table("cv_estructurados").insert({
             "raw_cv_id":             raw_cv_id,
             "nombre_candidato":      cv_estructurado.get("nombre_candidato"),
             "email":                 cv_estructurado.get("email"),
@@ -176,7 +176,7 @@ def procesar_candidato(ruta_pdf: str, job_spec: str, proceso_nombre: str = "Sin 
         cv_estructurado_id = resp_silver.data[0]["id"]
 
         # Gold — Evaluación
-        supabase.table("gold_evaluaciones").insert({
+        supabase.schema("gold").table("evaluaciones").insert({
             "cv_estructurado_id":    cv_estructurado_id,
             "score_total":           evaluacion.get("score_total", 0),
             "recomendacion":         evaluacion.get("recomendacion", "descartar"),
