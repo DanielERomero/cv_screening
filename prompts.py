@@ -44,7 +44,12 @@ class CVSchema(BaseModel):
 
 # Gold — evaluaciones
 class EvaluacionSchema(BaseModel):
-    score_total:           float     = Field(description="Puntuación global 0–100")
+    score_total:           float     = Field(description="Puntuación global 0–100, promedio ponderado de las 5 dimensiones")
+    score_skills_tecnicos: float     = Field(description="Score 0–100: cobertura de skills técnicos requeridos")
+    score_experiencia:     float     = Field(description="Score 0–100: años y tipo de experiencia vs. requisitos")
+    score_educacion:       float     = Field(description="Score 0–100: nivel y carrera de formación vs. requisitos")
+    score_idiomas:         float     = Field(description="Score 0–100: cumplimiento de requisitos de idiomas")
+    score_fit_general:     float     = Field(description="Score 0–100: coherencia de trayectoria y nivel del candidato")
     recomendacion:         str       = Field(description="Exactamente uno de: descartar | considerar | entrevistar | prioridad")
     justificacion_general: str       = Field(description="Justificación holística del score en 3-4 oraciones")
     fortalezas:            List[str] = Field(description="Hasta 3 fortalezas concretas del candidato para este puesto")

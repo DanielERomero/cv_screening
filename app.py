@@ -207,6 +207,11 @@ with tab_evaluar:
                     supabase.schema("gold").table("evaluaciones").insert({
                         "cv_estructurado_id":    cv_estructurado_id,
                         "score_total":           evaluacion.get("score_total", 0),
+                        "score_skills_tecnicos": evaluacion.get("score_skills_tecnicos"),
+                        "score_experiencia":     evaluacion.get("score_experiencia"),
+                        "score_educacion":       evaluacion.get("score_educacion"),
+                        "score_idiomas":         evaluacion.get("score_idiomas"),
+                        "score_fit_general":     evaluacion.get("score_fit_general"),
                         "recomendacion":         evaluacion.get("recomendacion", "descartar"),
                         "justificacion_general": evaluacion.get("justificacion_general"),
                         "fortalezas":            evaluacion.get("fortalezas", []),
@@ -229,11 +234,9 @@ with tab_evaluar:
             nombre_candidato = cv_json.get("nombre_candidato", "Desconocido")
             st.subheader(f"Resultados para: {nombre_candidato}")
 
-            m_col1, m_col2 = st.columns(2)
+            # --- Score total + decisión ---
             score         = evaluacion.get("score_total", 0)
             recomendacion = evaluacion.get("recomendacion", "descartar")
-
-            m_col1.metric("Score de Compatibilidad", f"{score}/100")
 
             if recomendacion in ["prioridad", "entrevistar"]:
                 color = "green"
@@ -242,15 +245,34 @@ with tab_evaluar:
             else:
                 color = "red"
 
-            m_col2.markdown(f"**Nivel (Decisión):** :{color}[{recomendacion.capitalize()}]")
+            h_col1, h_col2 = st.columns(2)
+            h_col1.metric("Score de Compatibilidad", f"{score}/100")
+            h_col2.markdown(f"**Decisión:** :{color}[{recomendacion.capitalize()}]")
 
+            # --- Desglose por dimensión ---
+            st.markdown("### Desglose por dimensión")
+            dimensiones = [
+                ("🛠️ Skills técnicos",  evaluacion.get("score_skills_tecnicos")),
+                ("💼 Experiencia",       evaluacion.get("score_experiencia")),
+                ("🎓 Educación",         evaluacion.get("score_educacion")),
+                ("🌐 Idiomas",           evaluacion.get("score_idiomas")),
+                ("🎯 Fit general",       evaluacion.get("score_fit_general")),
+            ]
+            d_cols = st.columns(len(dimensiones))
+            for col, (label, val) in zip(d_cols, dimensiones):
+                if val is not None:
+                    col.metric(label, f"{val:.0f}/100")
+                else:
+                    col.metric(label, "—")
+
+            # --- XAI ---
             st.markdown("### Auditoría de Decisión (XAI)")
             fortalezas = evaluacion.get("fortalezas", [])
             brechas    = evaluacion.get("brechas", [])
 
             st.success("**🚀 Fortalezas:**\n\n" + "\n".join(f"• {f}" for f in fortalezas))
             st.warning("**⚠️ Brechas:**\n\n"    + "\n".join(f"• {b}" for b in brechas))
-            st.info(f"**📊 Justificación del Score:**\n\n{evaluacion.get('justificacion_general', 'No especificada.')}")
+            st.info(f"**📊 Justificación:**\n\n{evaluacion.get('justificacion_general', 'No especificada.')}")
 
             with st.expander("Ver JSON estructurado del CV"):
                 st.json(cv_json)
@@ -305,13 +327,13 @@ with tab_historial:
                         silver = silver_map.get(e["cv_estructurado_id"], {})
                         raw_id = silver.get("raw_cv_id")
                         filas.append({
-                            "Proceso":     bronze_map.get(raw_id, "—"),
-                            "Candidato":   silver.get("nombre_candidato", "—"),
-                            "Cargo":       silver.get("ultimo_cargo", "—"),
-                            "Empresa":     silver.get("ultima_empresa", "—"),
-                            "Score":       e["score_total"],
-                            "Decisión":    e["recomendacion"].capitalize() if e["recomendacion"] else "—",
-                            "Fecha":       e["created_at"][:10] if e["created_at"] else "—",
+                            "Proceso":   bronze_map.get(raw_id, "—"),
+                            "Candidato": silver.get("nombre_candidato", "—"),
+                            "Cargo":     silver.get("ultimo_cargo", "—"),
+                            "Empresa":   silver.get("ultima_empresa", "—"),
+                            "Score":     e["score_total"],
+                            "Decisión":  e["recomendacion"].capitalize() if e["recomendacion"] else "—",
+                            "Fecha":     e["created_at"][:10] if e.get("created_at") else "—",
                         })
 
                     st.dataframe(filas, use_container_width=True)
