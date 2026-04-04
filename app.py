@@ -126,6 +126,77 @@ def radar_candidato(evaluacion: dict, nombre: str) -> go.Figure:
     return fig
 
 
+def donut_decisiones(filas: list) -> go.Figure:
+    conteo = {"Prioridad": 0, "Entrevistar": 0, "Considerar": 0, "Descartar": 0}
+    for f in filas:
+        decision = f.get("recomendacion", "descartar").capitalize()
+        if decision in conteo:
+            conteo[decision] += 1
+    colores = [
+        DECISION_COLOR_HEX["prioridad"],
+        DECISION_COLOR_HEX["entrevistar"],
+        DECISION_COLOR_HEX["considerar"],
+        DECISION_COLOR_HEX["descartar"],
+    ]
+    fig = go.Figure(go.Pie(
+        labels=list(conteo.keys()),
+        values=list(conteo.values()),
+        hole=0.55,
+        marker_colors=colores,
+        textinfo="label+percent",
+    ))
+    fig.update_layout(
+        showlegend=False,
+        margin=dict(t=20, b=20, l=20, r=20),
+        height=300,
+    )
+    return fig
+
+
+def histograma_scores(filas: list) -> go.Figure:
+    scores = [f["score_total"] for f in filas if f.get("score_total") is not None]
+    fig = go.Figure(go.Histogram(
+        x=scores,
+        xbins=dict(start=0, end=100, size=10),
+        marker_color="#6366f1",
+        opacity=0.8,
+    ))
+    fig.update_layout(
+        xaxis=dict(title="Score total", range=[0, 100]),
+        yaxis=dict(title="Candidatos"),
+        bargap=0.1,
+        margin=dict(t=20, b=40, l=40, r=20),
+        height=300,
+    )
+    return fig
+
+
+def radar_promedio(filas: list) -> go.Figure:
+    promedios = []
+    for key in DIM_KEYS:
+        vals = [f[key] for f in filas if f.get(key) is not None]
+        promedios.append(sum(vals) / len(vals) if vals else 0)
+
+    valores_cerrados = promedios + [promedios[0]]
+    labels_cerrados  = DIM_LABELS + [DIM_LABELS[0]]
+
+    fig = go.Figure(go.Scatterpolar(
+        r=valores_cerrados,
+        theta=labels_cerrados,
+        fill="toself",
+        fillcolor="#6366f1",
+        line=dict(color="#6366f1"),
+        opacity=0.5,
+    ))
+    fig.update_layout(
+        polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+        showlegend=False,
+        margin=dict(t=30, b=30, l=40, r=40),
+        height=340,
+    )
+    return fig
+
+
 def bar_ranking(resultados: list) -> go.Figure:
     nombres   = [r["cv_json"].get("nombre_candidato", "—") for r in resultados]
     scores    = [r["evaluacion"].get("score_total", 0) for r in resultados]
@@ -398,15 +469,22 @@ with tab_evaluar:
 with tab_historial:
     st.subheader("Historial de evaluaciones")
 
-    if st.button("Cargar historial", type="secondary"):
+    if "historial_data" not in st.session_state:
+        st.session_state.historial_data = []
+
+    if st.button("Cargar / Actualizar historial", type="secondary"):
         with st.spinner("Consultando base de datos..."):
             try:
                 resp = (
                     supabase.schema("gold")
                     .table("evaluaciones")
-                    .select("id, score_total, recomendacion, justificacion_general, created_at, cv_estructurado_id")
+                    .select(
+                        "id, score_total, recomendacion, created_at, cv_estructurado_id,"
+                        "score_skills_tecnicos, score_experiencia, score_educacion,"
+                        "score_idiomas, score_fit_general"
+                    )
                     .order("created_at", desc=True)
-                    .limit(50)
+                    .limit(200)
                     .execute()
                 )
                 evaluaciones = resp.data
@@ -414,7 +492,6 @@ with tab_historial:
                 if not evaluaciones:
                     st.info("No hay evaluaciones registradas aún.")
                 else:
-                    # Obtener nombres de candidatos (silver) en una sola consulta
                     ids = [e["cv_estructurado_id"] for e in evaluaciones]
                     resp_silver = (
                         supabase.schema("silver")
@@ -425,7 +502,6 @@ with tab_historial:
                     )
                     silver_map = {r["id"]: r for r in resp_silver.data}
 
-                    # Obtener proceso_nombre desde bronze
                     raw_ids = [silver_map[i]["raw_cv_id"] for i in ids if i in silver_map]
                     resp_bronze = (
                         supabase.schema("bronze")
@@ -436,23 +512,73 @@ with tab_historial:
                     )
                     bronze_map = {r["id"]: r["proceso_nombre"] for r in resp_bronze.data}
 
-                    # Construir filas
                     filas = []
                     for e in evaluaciones:
                         silver = silver_map.get(e["cv_estructurado_id"], {})
                         raw_id = silver.get("raw_cv_id")
                         filas.append({
-                            "Proceso":   bronze_map.get(raw_id, "—"),
-                            "Candidato": silver.get("nombre_candidato", "—"),
-                            "Cargo":     silver.get("ultimo_cargo", "—"),
-                            "Empresa":   silver.get("ultima_empresa", "—"),
-                            "Score":     e["score_total"],
-                            "Decisión":  e["recomendacion"].capitalize() if e["recomendacion"] else "—",
-                            "Fecha":     e["created_at"][:10] if e.get("created_at") else "—",
+                            "proceso_nombre":       bronze_map.get(raw_id, "—"),
+                            "nombre_candidato":     silver.get("nombre_candidato", "—"),
+                            "ultimo_cargo":         silver.get("ultimo_cargo", "—"),
+                            "ultima_empresa":       silver.get("ultima_empresa", "—"),
+                            "score_total":          e.get("score_total"),
+                            "recomendacion":        e.get("recomendacion", "descartar"),
+                            "score_skills_tecnicos": e.get("score_skills_tecnicos"),
+                            "score_experiencia":    e.get("score_experiencia"),
+                            "score_educacion":      e.get("score_educacion"),
+                            "score_idiomas":        e.get("score_idiomas"),
+                            "score_fit_general":    e.get("score_fit_general"),
+                            "fecha":                e["created_at"][:10] if e.get("created_at") else "—",
                         })
 
-                    st.dataframe(filas, use_container_width=True)
-                    st.caption(f"Mostrando los últimos {len(filas)} registros.")
+                    st.session_state.historial_data = filas
 
             except Exception as ex:
                 st.error(f"Error al consultar Supabase: {ex}")
+
+    if st.session_state.historial_data:
+        filas = st.session_state.historial_data
+
+        # --- Filtro por proceso ---
+        procesos = sorted({f["proceso_nombre"] for f in filas if f["proceso_nombre"] != "—"})
+        opciones = ["Todos los procesos"] + procesos
+        filtro   = st.selectbox("Filtrar por proceso", opciones)
+        filas_filtradas = filas if filtro == "Todos los procesos" else [
+            f for f in filas if f["proceso_nombre"] == filtro
+        ]
+
+        st.caption(f"{len(filas_filtradas)} candidatos · {filtro}")
+
+        # --- Dashboard: 3 gráficos ---
+        st.markdown("### Dashboard")
+        g_col1, g_col2 = st.columns(2)
+
+        with g_col1:
+            st.markdown("**Distribución de decisiones**")
+            st.plotly_chart(donut_decisiones(filas_filtradas), use_container_width=True)
+
+        with g_col2:
+            st.markdown("**Distribución de scores**")
+            st.plotly_chart(histograma_scores(filas_filtradas), use_container_width=True)
+
+        st.markdown("**Perfil promedio del pool (radar de dimensiones)**")
+        radar_col, _ = st.columns([1, 1])
+        with radar_col:
+            st.plotly_chart(radar_promedio(filas_filtradas), use_container_width=True)
+
+        # --- Tabla ---
+        st.divider()
+        st.markdown("### Detalle de candidatos")
+        tabla = [
+            {
+                "Proceso":    f["proceso_nombre"],
+                "Candidato":  f["nombre_candidato"],
+                "Cargo":      f["ultimo_cargo"],
+                "Score":      f["score_total"],
+                "Decisión":   f["recomendacion"].capitalize() if f["recomendacion"] else "—",
+                "Fecha":      f["fecha"],
+            }
+            for f in filas_filtradas
+        ]
+        st.dataframe(tabla, use_container_width=True, hide_index=True)
+        st.caption(f"Mostrando {len(tabla)} registros.")
