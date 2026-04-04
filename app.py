@@ -2,7 +2,10 @@ import streamlit as st
 import pdfplumber
 import hashlib
 import json
+import io
+import csv
 import os
+import plotly.graph_objects as go
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from openai import OpenAI
@@ -85,7 +88,69 @@ def interactuar_con_gpt(prompt: str, rol_sistema: str) -> dict:
         return {}
 
 # ==========================================
-# 3. INTERFAZ DE USUARIO
+# 3. FUNCIONES DE VISUALIZACIÓN
+# ==========================================
+
+DIM_LABELS = ["Skills técnicos", "Experiencia", "Educación", "Idiomas", "Fit general"]
+DIM_KEYS   = ["score_skills_tecnicos", "score_experiencia", "score_educacion", "score_idiomas", "score_fit_general"]
+
+DECISION_COLOR_HEX = {
+    "prioridad":   "#22c55e",
+    "entrevistar": "#eab308",
+    "considerar":  "#f97316",
+    "descartar":   "#ef4444",
+}
+
+def radar_candidato(evaluacion: dict, nombre: str) -> go.Figure:
+    valores = [evaluacion.get(k) or 0 for k in DIM_KEYS]
+    valores_cerrados = valores + [valores[0]]
+    labels_cerrados  = DIM_LABELS + [DIM_LABELS[0]]
+    rec   = evaluacion.get("recomendacion", "descartar")
+    color = DECISION_COLOR_HEX.get(rec, "#6b7280")
+
+    fig = go.Figure(go.Scatterpolar(
+        r=valores_cerrados,
+        theta=labels_cerrados,
+        fill="toself",
+        fillcolor=color,
+        line=dict(color=color),
+        opacity=0.6,
+        name=nombre,
+    ))
+    fig.update_layout(
+        polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+        showlegend=False,
+        margin=dict(t=30, b=30, l=40, r=40),
+        height=320,
+    )
+    return fig
+
+
+def bar_ranking(resultados: list) -> go.Figure:
+    nombres   = [r["cv_json"].get("nombre_candidato", "—") for r in resultados]
+    scores    = [r["evaluacion"].get("score_total", 0) for r in resultados]
+    decisiones = [r["evaluacion"].get("recomendacion", "descartar") for r in resultados]
+    colores   = [DECISION_COLOR_HEX.get(d, "#6b7280") for d in decisiones]
+
+    fig = go.Figure(go.Bar(
+        x=scores,
+        y=nombres,
+        orientation="h",
+        marker_color=colores,
+        text=[f"{s}/100" for s in scores],
+        textposition="outside",
+    ))
+    fig.update_layout(
+        xaxis=dict(range=[0, 110], title="Score"),
+        yaxis=dict(autorange="reversed"),
+        margin=dict(t=20, b=20, l=10, r=60),
+        height=max(200, len(resultados) * 55),
+    )
+    return fig
+
+
+# ==========================================
+# 4. INTERFAZ DE USUARIO
 # ==========================================
 st.title("☁️ Sistema de Selección Automatizada")
 st.markdown("Sube un CV, define el Job Spec y deja que la IA evalúe la compatibilidad con explicabilidad total.")
@@ -272,6 +337,20 @@ with tab_evaluar:
                     "Decisión":       f"{DECISION_COLOR.get(rec, '')} {rec.capitalize()}",
                 })
             st.dataframe(ranking_filas, use_container_width=True, hide_index=True)
+            st.plotly_chart(bar_ranking(resultados), use_container_width=True)
+
+            # --- Exportación CSV ---
+            buf = io.StringIO()
+            writer = csv.DictWriter(buf, fieldnames=ranking_filas[0].keys())
+            writer.writeheader()
+            writer.writerows(ranking_filas)
+            nombre_proceso = st.session_state.proceso_nombre.replace(" ", "_")
+            st.download_button(
+                label="⬇️ Descargar ranking como CSV",
+                data=buf.getvalue().encode("utf-8"),
+                file_name=f"ranking_{nombre_proceso}.csv",
+                mime="text/csv",
+            )
 
             st.divider()
             st.markdown("## Detalle por candidato")
@@ -283,23 +362,32 @@ with tab_evaluar:
                 rec       = evaluacion.get("recomendacion", "descartar")
 
                 with st.expander(f"{DECISION_COLOR.get(rec, '')} {nombre} — {score}/100"):
-                    # Desglose por dimensión
-                    dimensiones = [
-                        ("🛠️ Skills",      evaluacion.get("score_skills_tecnicos")),
-                        ("💼 Experiencia", evaluacion.get("score_experiencia")),
-                        ("🎓 Educación",   evaluacion.get("score_educacion")),
-                        ("🌐 Idiomas",     evaluacion.get("score_idiomas")),
-                        ("🎯 Fit",         evaluacion.get("score_fit_general")),
-                    ]
-                    d_cols = st.columns(len(dimensiones))
-                    for col, (label, val) in zip(d_cols, dimensiones):
-                        col.metric(label, f"{val:.0f}/100" if val is not None else "—")
+                    exp_col1, exp_col2 = st.columns([1, 1])
 
-                    fortalezas = evaluacion.get("fortalezas", [])
-                    brechas    = evaluacion.get("brechas", [])
-                    st.success("**🚀 Fortalezas:**\n\n" + "\n".join(f"• {f}" for f in fortalezas))
-                    st.warning("**⚠️ Brechas:**\n\n"    + "\n".join(f"• {b}" for b in brechas))
-                    st.info(f"**📊 Justificación:**\n\n{evaluacion.get('justificacion_general', 'No especificada.')}")
+                    with exp_col1:
+                        # Métricas de dimensión
+                        dimensiones = [
+                            ("🛠️ Skills",      evaluacion.get("score_skills_tecnicos")),
+                            ("💼 Experiencia", evaluacion.get("score_experiencia")),
+                            ("🎓 Educación",   evaluacion.get("score_educacion")),
+                            ("🌐 Idiomas",     evaluacion.get("score_idiomas")),
+                            ("🎯 Fit",         evaluacion.get("score_fit_general")),
+                        ]
+                        d_cols = st.columns(len(dimensiones))
+                        for col, (label, val) in zip(d_cols, dimensiones):
+                            col.metric(label, f"{val:.0f}/100" if val is not None else "—")
+
+                        fortalezas = evaluacion.get("fortalezas", [])
+                        brechas    = evaluacion.get("brechas", [])
+                        st.success("**🚀 Fortalezas:**\n\n" + "\n".join(f"• {f}" for f in fortalezas))
+                        st.warning("**⚠️ Brechas:**\n\n"    + "\n".join(f"• {b}" for b in brechas))
+                        st.info(f"**📊 Justificación:**\n\n{evaluacion.get('justificacion_general', 'No especificada.')}")
+
+                    with exp_col2:
+                        st.plotly_chart(
+                            radar_candidato(evaluacion, nombre),
+                            use_container_width=True,
+                        )
 
                     with st.expander("Ver JSON estructurado del CV"):
                         st.json(cv_json)
