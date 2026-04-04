@@ -27,24 +27,21 @@ def init_connections():
     except (FileNotFoundError, KeyError):
         # Intento 2: Entorno local (.env)
         load_dotenv()
-        
+
         supa_url = os.environ.get("SUPABASE_URL")
         supa_key = os.environ.get("SUPABASE_KEY")
         github_token = os.environ.get("GITHUB_TOKEN")
-    
+
     if not supa_url or not supa_key or not github_token:
         st.error("🚨 Faltan credenciales. Verifica Supabase URL/KEY y GITHUB_TOKEN.")
         st.stop()
-        
-    # Cliente Supabase
+
     db_client = create_client(supa_url, supa_key)
-    
-    # Cliente LLM (Usando la librería de OpenAI apuntando a GitHub Models)
     llm_client = OpenAI(
         base_url="https://models.inference.ai.azure.com",
         api_key=github_token,
     )
-    
+
     return db_client, llm_client
 
 supabase, llm = init_connections()
@@ -78,10 +75,9 @@ def interactuar_con_gpt(prompt: str, rol_sistema: str) -> dict:
                 {"role": "user", "content": prompt}
             ],
             model=MODELO_NUBE,
-            temperature=0, # Temperatura baja para que sea analítico, no creativo
-            response_format={"type": "json_object"} # Forzamos la salida a JSON puro
+            temperature=0,
+            response_format={"type": "json_object"}
         )
-        # Extraemos y parseamos el JSON de la respuesta
         contenido = response.choices[0].message.content
         return json.loads(contenido)
     except Exception as e:
@@ -89,103 +85,151 @@ def interactuar_con_gpt(prompt: str, rol_sistema: str) -> dict:
         return {}
 
 # ==========================================
-# 3. INTERFAZ DE USUARIO (FRONTEND)
+# 3. INTERFAZ DE USUARIO
 # ==========================================
 st.title("☁️ Sistema de Selección Automatizada")
 st.markdown("Sube un CV, define el Job Spec y deja que la IA evalúe la compatibilidad con explicabilidad total.")
 
-proceso_nombre = st.text_input(
-    "Nombre del proceso de selección",
-    placeholder="Ej: Data Engineer Q1 2026"
-)
+# --- Session state defaults ---
+if "proceso_nombre" not in st.session_state:
+    st.session_state.proceso_nombre = ""
+if "job_spec" not in st.session_state:
+    st.session_state.job_spec = ""
+if "ultimo_resultado" not in st.session_state:
+    st.session_state.ultimo_resultado = None  # dict con cv_json + evaluacion
 
-col1, col2 = st.columns([1, 1])
+tab_config, tab_evaluar, tab_historial = st.tabs([
+    "⚙️ Configuración del proceso",
+    "📄 Evaluar CV",
+    "📊 Historial",
+])
 
-with col1:
-    st.subheader("1. Requerimientos del Puesto (Job Spec)")
-    job_spec = st.text_area(
-        "Ingresa las habilidades y requisitos:",
-        height=200,
-        placeholder="Ej: Buscamos un Data Scientist con 3 años de experiencia en Python..."
+# ==========================================
+# TAB 1 — CONFIGURACIÓN DEL PROCESO
+# ==========================================
+with tab_config:
+    st.subheader("Configuración del proceso de selección")
+    st.markdown("Define el contexto del proceso. Estos datos se usarán en la pestaña **Evaluar CV** y quedan activos durante toda la sesión.")
+
+    proceso_nombre_input = st.text_input(
+        "Nombre del proceso de selección",
+        value=st.session_state.proceso_nombre,
+        placeholder="Ej: Data Engineer Q1 2026",
     )
 
-with col2:
-    st.subheader("2. Currículum del Candidato")
-    archivo_subido = st.file_uploader("Sube el CV (PDF)", type=["pdf"])
+    job_spec_input = st.text_area(
+        "Requerimientos del Puesto (Job Spec)",
+        value=st.session_state.job_spec,
+        height=250,
+        placeholder="Ej: Buscamos un Data Scientist con 3 años de experiencia en Python...",
+    )
 
-if st.button("Ejecutar Motor de Evaluación", type="primary", use_container_width=True):
-    if not proceso_nombre or not job_spec or not archivo_subido:
-        st.warning("⚠️ Completa el nombre del proceso, el Job Spec y sube un CV.")
+    if st.button("Guardar configuración", type="primary"):
+        if not proceso_nombre_input or not job_spec_input:
+            st.warning("⚠️ Completa el nombre del proceso y el Job Spec antes de guardar.")
+        else:
+            st.session_state.proceso_nombre = proceso_nombre_input
+            st.session_state.job_spec = job_spec_input
+            st.success("✅ Configuración guardada. Ya puedes evaluar CVs.")
+
+# ==========================================
+# TAB 2 — EVALUAR CV
+# ==========================================
+with tab_evaluar:
+    st.subheader("Evaluación de candidato")
+
+    if not st.session_state.proceso_nombre or not st.session_state.job_spec:
+        st.info("ℹ️ Primero configura el proceso en la pestaña **⚙️ Configuración del proceso**.")
     else:
-        with st.spinner("⏳ Moliendo datos: Extrayendo texto..."):
-            texto_cv, num_paginas = extraer_texto_en_memoria(archivo_subido)
-            
-        if texto_cv:
-            with st.spinner("🧠 Percolación Semántica: Estructurando CV con GPT-4o..."):
-                prompt_estructura = get_user_prompt_estructuracion(texto_cv)
-                cv_json = interactuar_con_gpt(prompt_estructura, SYS_PROMPT_ESTRUCTURACION)
-            
-            with st.spinner("⚖️ Análisis Profundo: Evaluando compatibilidad..."):
-                prompt_evaluacion = get_user_prompt_evaluacion(json.dumps(cv_json), job_spec)
-                evaluacion = interactuar_con_gpt(prompt_evaluacion, SYS_PROMPT_EVALUACION)
-            
-            with st.spinner("💾 Guardando resultados en Supabase..."):
-                # Bronze — PDF crudo
-                archivo_subido.seek(0)
-                pdf_bytes = archivo_subido.read()
-                file_hash = hashlib.sha256(pdf_bytes).hexdigest()
+        st.markdown(
+            f"**Proceso activo:** {st.session_state.proceso_nombre}  \n"
+            f"**Job Spec:** {st.session_state.job_spec[:120]}{'...' if len(st.session_state.job_spec) > 120 else ''}"
+        )
+        st.divider()
 
-                resp_bronze = supabase.schema("bronze").table("raw_cvs").insert({
-                    "proceso_nombre": proceso_nombre,
-                    "filename":       archivo_subido.name,
-                    "file_hash":      file_hash,
-                    "texto_crudo":    texto_cv,
-                    "num_paginas":    num_paginas,
-                    "tamanio_bytes":  len(pdf_bytes),
-                }).execute()
-                raw_cv_id = resp_bronze.data[0]["id"]
+        archivo_subido = st.file_uploader("Sube el CV del candidato (PDF)", type=["pdf"])
 
-                # Silver — CV estructurado
-                resp_silver = supabase.schema("silver").table("cv_estructurados").insert({
-                    "raw_cv_id":             raw_cv_id,
-                    "nombre_candidato":      cv_json.get("nombre_candidato"),
-                    "email":                 cv_json.get("email"),
-                    "telefono":              cv_json.get("telefono"),
-                    "ubicacion":             cv_json.get("ubicacion"),
-                    "resumen_perfil":        cv_json.get("resumen_perfil"),
-                    "experiencia_anios":     cv_json.get("experiencia_anios"),
-                    "ultimo_cargo":          cv_json.get("ultimo_cargo"),
-                    "ultima_empresa":        cv_json.get("ultima_empresa"),
-                    "educacion_nivel":       cv_json.get("educacion_nivel"),
-                    "educacion_carrera":     cv_json.get("educacion_carrera"),
-                    "educacion_institucion": cv_json.get("educacion_institucion"),
-                    "skills_tecnicos":       cv_json.get("skills_tecnicos", []),
-                    "idiomas":               cv_json.get("idiomas", []),
-                    "experiencia_detalle":   cv_json.get("experiencia_detalle", []),
-                    "educacion_detalle":     cv_json.get("educacion_detalle", []),
-                }).execute()
-                cv_estructurado_id = resp_silver.data[0]["id"]
+        if st.button("Ejecutar Motor de Evaluación", type="primary", use_container_width=True):
+            if not archivo_subido:
+                st.warning("⚠️ Sube un archivo PDF para continuar.")
+            else:
+                with st.status("Procesando CV...", expanded=True) as status:
+                    st.write("📄 Extrayendo texto del PDF...")
+                    texto_cv, num_paginas = extraer_texto_en_memoria(archivo_subido)
 
-                # Gold — Evaluación
-                supabase.schema("gold").table("evaluaciones").insert({
-                    "cv_estructurado_id":    cv_estructurado_id,
-                    "score_total":           evaluacion.get("score_total", 0),
-                    "recomendacion":         evaluacion.get("recomendacion", "descartar"),
-                    "justificacion_general": evaluacion.get("justificacion_general"),
-                    "fortalezas":            evaluacion.get("fortalezas", []),
-                    "brechas":               evaluacion.get("brechas", []),
-                }).execute()
+                    if not texto_cv:
+                        status.update(label="Error en la extracción", state="error")
+                        st.stop()
 
-            # ==========================================
-            # 4. RESULTADOS (XAI)
-            # ==========================================
-            st.success("✅ Análisis completado. Datos persistidos en la nube.")
+                    st.write("🧠 Estructurando CV con GPT-4.1...")
+                    prompt_estructura = get_user_prompt_estructuracion(texto_cv)
+                    cv_json = interactuar_con_gpt(prompt_estructura, SYS_PROMPT_ESTRUCTURACION)
+
+                    st.write("⚖️ Evaluando compatibilidad con el Job Spec...")
+                    prompt_evaluacion = get_user_prompt_evaluacion(json.dumps(cv_json), st.session_state.job_spec)
+                    evaluacion = interactuar_con_gpt(prompt_evaluacion, SYS_PROMPT_EVALUACION)
+
+                    st.write("💾 Guardando resultados en Supabase...")
+                    archivo_subido.seek(0)
+                    pdf_bytes = archivo_subido.read()
+                    file_hash = hashlib.sha256(pdf_bytes).hexdigest()
+
+                    resp_bronze = supabase.schema("bronze").table("raw_cvs").insert({
+                        "proceso_nombre": st.session_state.proceso_nombre,
+                        "filename":       archivo_subido.name,
+                        "file_hash":      file_hash,
+                        "texto_crudo":    texto_cv,
+                        "num_paginas":    num_paginas,
+                        "tamanio_bytes":  len(pdf_bytes),
+                    }).execute()
+                    raw_cv_id = resp_bronze.data[0]["id"]
+
+                    resp_silver = supabase.schema("silver").table("cv_estructurados").insert({
+                        "raw_cv_id":             raw_cv_id,
+                        "nombre_candidato":      cv_json.get("nombre_candidato"),
+                        "email":                 cv_json.get("email"),
+                        "telefono":              cv_json.get("telefono"),
+                        "ubicacion":             cv_json.get("ubicacion"),
+                        "resumen_perfil":        cv_json.get("resumen_perfil"),
+                        "experiencia_anios":     cv_json.get("experiencia_anios"),
+                        "ultimo_cargo":          cv_json.get("ultimo_cargo"),
+                        "ultima_empresa":        cv_json.get("ultima_empresa"),
+                        "educacion_nivel":       cv_json.get("educacion_nivel"),
+                        "educacion_carrera":     cv_json.get("educacion_carrera"),
+                        "educacion_institucion": cv_json.get("educacion_institucion"),
+                        "skills_tecnicos":       cv_json.get("skills_tecnicos", []),
+                        "idiomas":               cv_json.get("idiomas", []),
+                        "experiencia_detalle":   cv_json.get("experiencia_detalle", []),
+                        "educacion_detalle":     cv_json.get("educacion_detalle", []),
+                    }).execute()
+                    cv_estructurado_id = resp_silver.data[0]["id"]
+
+                    supabase.schema("gold").table("evaluaciones").insert({
+                        "cv_estructurado_id":    cv_estructurado_id,
+                        "score_total":           evaluacion.get("score_total", 0),
+                        "recomendacion":         evaluacion.get("recomendacion", "descartar"),
+                        "justificacion_general": evaluacion.get("justificacion_general"),
+                        "fortalezas":            evaluacion.get("fortalezas", []),
+                        "brechas":               evaluacion.get("brechas", []),
+                    }).execute()
+
+                    st.session_state.ultimo_resultado = {
+                        "cv_json":   cv_json,
+                        "evaluacion": evaluacion,
+                    }
+                    status.update(label="✅ Análisis completado", state="complete", expanded=False)
+
+        # --- Mostrar último resultado ---
+        if st.session_state.ultimo_resultado:
+            resultado = st.session_state.ultimo_resultado
+            cv_json   = resultado["cv_json"]
+            evaluacion = resultado["evaluacion"]
+
             st.divider()
-
             nombre_candidato = cv_json.get("nombre_candidato", "Desconocido")
             st.subheader(f"Resultados para: {nombre_candidato}")
-            m_col1, m_col2 = st.columns(2)
 
+            m_col1, m_col2 = st.columns(2)
             score         = evaluacion.get("score_total", 0)
             recomendacion = evaluacion.get("recomendacion", "descartar")
 
@@ -201,7 +245,6 @@ if st.button("Ejecutar Motor de Evaluación", type="primary", use_container_widt
             m_col2.markdown(f"**Nivel (Decisión):** :{color}[{recomendacion.capitalize()}]")
 
             st.markdown("### Auditoría de Decisión (XAI)")
-
             fortalezas = evaluacion.get("fortalezas", [])
             brechas    = evaluacion.get("brechas", [])
 
@@ -211,3 +254,68 @@ if st.button("Ejecutar Motor de Evaluación", type="primary", use_container_widt
 
             with st.expander("Ver JSON estructurado del CV"):
                 st.json(cv_json)
+
+# ==========================================
+# TAB 3 — HISTORIAL
+# ==========================================
+with tab_historial:
+    st.subheader("Historial de evaluaciones")
+
+    if st.button("Cargar historial", type="secondary"):
+        with st.spinner("Consultando base de datos..."):
+            try:
+                resp = (
+                    supabase.schema("gold")
+                    .table("evaluaciones")
+                    .select("id, score_total, recomendacion, justificacion_general, created_at, cv_estructurado_id")
+                    .order("created_at", desc=True)
+                    .limit(50)
+                    .execute()
+                )
+                evaluaciones = resp.data
+
+                if not evaluaciones:
+                    st.info("No hay evaluaciones registradas aún.")
+                else:
+                    # Obtener nombres de candidatos (silver) en una sola consulta
+                    ids = [e["cv_estructurado_id"] for e in evaluaciones]
+                    resp_silver = (
+                        supabase.schema("silver")
+                        .table("cv_estructurados")
+                        .select("id, nombre_candidato, ultimo_cargo, ultima_empresa, raw_cv_id")
+                        .in_("id", ids)
+                        .execute()
+                    )
+                    silver_map = {r["id"]: r for r in resp_silver.data}
+
+                    # Obtener proceso_nombre desde bronze
+                    raw_ids = [silver_map[i]["raw_cv_id"] for i in ids if i in silver_map]
+                    resp_bronze = (
+                        supabase.schema("bronze")
+                        .table("raw_cvs")
+                        .select("id, proceso_nombre")
+                        .in_("id", raw_ids)
+                        .execute()
+                    )
+                    bronze_map = {r["id"]: r["proceso_nombre"] for r in resp_bronze.data}
+
+                    # Construir filas
+                    filas = []
+                    for e in evaluaciones:
+                        silver = silver_map.get(e["cv_estructurado_id"], {})
+                        raw_id = silver.get("raw_cv_id")
+                        filas.append({
+                            "Proceso":     bronze_map.get(raw_id, "—"),
+                            "Candidato":   silver.get("nombre_candidato", "—"),
+                            "Cargo":       silver.get("ultimo_cargo", "—"),
+                            "Empresa":     silver.get("ultima_empresa", "—"),
+                            "Score":       e["score_total"],
+                            "Decisión":    e["recomendacion"].capitalize() if e["recomendacion"] else "—",
+                            "Fecha":       e["created_at"][:10] if e["created_at"] else "—",
+                        })
+
+                    st.dataframe(filas, use_container_width=True)
+                    st.caption(f"Mostrando los últimos {len(filas)} registros.")
+
+            except Exception as ex:
+                st.error(f"Error al consultar Supabase: {ex}")
