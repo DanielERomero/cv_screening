@@ -95,8 +95,8 @@ if "proceso_nombre" not in st.session_state:
     st.session_state.proceso_nombre = ""
 if "job_spec" not in st.session_state:
     st.session_state.job_spec = ""
-if "ultimo_resultado" not in st.session_state:
-    st.session_state.ultimo_resultado = None  # dict con cv_json + evaluacion
+if "resultados_sesion" not in st.session_state:
+    st.session_state.resultados_sesion = []  # lista de {cv_json, evaluacion} por candidato
 
 tab_config, tab_evaluar, tab_historial = st.tabs([
     "⚙️ Configuración del proceso",
@@ -147,135 +147,162 @@ with tab_evaluar:
         )
         st.divider()
 
-        archivo_subido = st.file_uploader("Sube el CV del candidato (PDF)", type=["pdf"])
+        archivos_subidos = st.file_uploader(
+            "Sube los CVs de los candidatos (PDF)",
+            type=["pdf"],
+            accept_multiple_files=True,
+        )
 
-        if st.button("Ejecutar Motor de Evaluación", type="primary", use_container_width=True):
-            if not archivo_subido:
-                st.warning("⚠️ Sube un archivo PDF para continuar.")
+        col_btn, col_clear = st.columns([3, 1])
+        ejecutar = col_btn.button("Ejecutar Motor de Evaluación", type="primary", use_container_width=True)
+        if col_clear.button("Limpiar resultados", use_container_width=True):
+            st.session_state.resultados_sesion = []
+            st.rerun()
+
+        if ejecutar:
+            if not archivos_subidos:
+                st.warning("⚠️ Sube al menos un archivo PDF para continuar.")
             else:
-                with st.status("Procesando CV...", expanded=True) as status:
-                    st.write("📄 Extrayendo texto del PDF...")
-                    texto_cv, num_paginas = extraer_texto_en_memoria(archivo_subido)
+                nuevos_resultados = []
+                total = len(archivos_subidos)
 
-                    if not texto_cv:
-                        status.update(label="Error en la extracción", state="error")
-                        st.stop()
+                for i, archivo in enumerate(archivos_subidos, start=1):
+                    with st.status(f"Procesando {i}/{total}: {archivo.name}", expanded=True) as status:
+                        st.write("📄 Extrayendo texto del PDF...")
+                        texto_cv, num_paginas = extraer_texto_en_memoria(archivo)
 
-                    st.write("🧠 Estructurando CV con GPT-4.1...")
-                    prompt_estructura = get_user_prompt_estructuracion(texto_cv)
-                    cv_json = interactuar_con_gpt(prompt_estructura, SYS_PROMPT_ESTRUCTURACION)
+                        if not texto_cv:
+                            status.update(label=f"❌ Error extrayendo {archivo.name}", state="error")
+                            continue
 
-                    st.write("⚖️ Evaluando compatibilidad con el Job Spec...")
-                    prompt_evaluacion = get_user_prompt_evaluacion(json.dumps(cv_json), st.session_state.job_spec)
-                    evaluacion = interactuar_con_gpt(prompt_evaluacion, SYS_PROMPT_EVALUACION)
+                        st.write("🧠 Estructurando CV con GPT-4.1...")
+                        prompt_estructura = get_user_prompt_estructuracion(texto_cv)
+                        cv_json = interactuar_con_gpt(prompt_estructura, SYS_PROMPT_ESTRUCTURACION)
 
-                    st.write("💾 Guardando resultados en Supabase...")
-                    archivo_subido.seek(0)
-                    pdf_bytes = archivo_subido.read()
-                    file_hash = hashlib.sha256(pdf_bytes).hexdigest()
+                        st.write("⚖️ Evaluando compatibilidad con el Job Spec...")
+                        prompt_evaluacion = get_user_prompt_evaluacion(json.dumps(cv_json), st.session_state.job_spec)
+                        evaluacion = interactuar_con_gpt(prompt_evaluacion, SYS_PROMPT_EVALUACION)
 
-                    resp_bronze = supabase.schema("bronze").table("raw_cvs").insert({
-                        "proceso_nombre": st.session_state.proceso_nombre,
-                        "filename":       archivo_subido.name,
-                        "file_hash":      file_hash,
-                        "texto_crudo":    texto_cv,
-                        "num_paginas":    num_paginas,
-                        "tamanio_bytes":  len(pdf_bytes),
-                    }).execute()
-                    raw_cv_id = resp_bronze.data[0]["id"]
+                        st.write("💾 Guardando en Supabase...")
+                        archivo.seek(0)
+                        pdf_bytes = archivo.read()
+                        file_hash = hashlib.sha256(pdf_bytes).hexdigest()
 
-                    resp_silver = supabase.schema("silver").table("cv_estructurados").insert({
-                        "raw_cv_id":             raw_cv_id,
-                        "nombre_candidato":      cv_json.get("nombre_candidato"),
-                        "email":                 cv_json.get("email"),
-                        "telefono":              cv_json.get("telefono"),
-                        "ubicacion":             cv_json.get("ubicacion"),
-                        "resumen_perfil":        cv_json.get("resumen_perfil"),
-                        "experiencia_anios":     cv_json.get("experiencia_anios"),
-                        "ultimo_cargo":          cv_json.get("ultimo_cargo"),
-                        "ultima_empresa":        cv_json.get("ultima_empresa"),
-                        "educacion_nivel":       cv_json.get("educacion_nivel"),
-                        "educacion_carrera":     cv_json.get("educacion_carrera"),
-                        "educacion_institucion": cv_json.get("educacion_institucion"),
-                        "skills_tecnicos":       cv_json.get("skills_tecnicos", []),
-                        "idiomas":               cv_json.get("idiomas", []),
-                        "experiencia_detalle":   cv_json.get("experiencia_detalle", []),
-                        "educacion_detalle":     cv_json.get("educacion_detalle", []),
-                    }).execute()
-                    cv_estructurado_id = resp_silver.data[0]["id"]
+                        resp_bronze = supabase.schema("bronze").table("raw_cvs").insert({
+                            "proceso_nombre": st.session_state.proceso_nombre,
+                            "filename":       archivo.name,
+                            "file_hash":      file_hash,
+                            "texto_crudo":    texto_cv,
+                            "num_paginas":    num_paginas,
+                            "tamanio_bytes":  len(pdf_bytes),
+                        }).execute()
+                        raw_cv_id = resp_bronze.data[0]["id"]
 
-                    supabase.schema("gold").table("evaluaciones").insert({
-                        "cv_estructurado_id":    cv_estructurado_id,
-                        "score_total":           evaluacion.get("score_total", 0),
-                        "score_skills_tecnicos": evaluacion.get("score_skills_tecnicos"),
-                        "score_experiencia":     evaluacion.get("score_experiencia"),
-                        "score_educacion":       evaluacion.get("score_educacion"),
-                        "score_idiomas":         evaluacion.get("score_idiomas"),
-                        "score_fit_general":     evaluacion.get("score_fit_general"),
-                        "recomendacion":         evaluacion.get("recomendacion", "descartar"),
-                        "justificacion_general": evaluacion.get("justificacion_general"),
-                        "fortalezas":            evaluacion.get("fortalezas", []),
-                        "brechas":               evaluacion.get("brechas", []),
-                    }).execute()
+                        resp_silver = supabase.schema("silver").table("cv_estructurados").insert({
+                            "raw_cv_id":             raw_cv_id,
+                            "nombre_candidato":      cv_json.get("nombre_candidato"),
+                            "email":                 cv_json.get("email"),
+                            "telefono":              cv_json.get("telefono"),
+                            "ubicacion":             cv_json.get("ubicacion"),
+                            "resumen_perfil":        cv_json.get("resumen_perfil"),
+                            "experiencia_anios":     cv_json.get("experiencia_anios"),
+                            "ultimo_cargo":          cv_json.get("ultimo_cargo"),
+                            "ultima_empresa":        cv_json.get("ultima_empresa"),
+                            "educacion_nivel":       cv_json.get("educacion_nivel"),
+                            "educacion_carrera":     cv_json.get("educacion_carrera"),
+                            "educacion_institucion": cv_json.get("educacion_institucion"),
+                            "skills_tecnicos":       cv_json.get("skills_tecnicos", []),
+                            "idiomas":               cv_json.get("idiomas", []),
+                            "experiencia_detalle":   cv_json.get("experiencia_detalle", []),
+                            "educacion_detalle":     cv_json.get("educacion_detalle", []),
+                        }).execute()
+                        cv_estructurado_id = resp_silver.data[0]["id"]
 
-                    st.session_state.ultimo_resultado = {
-                        "cv_json":   cv_json,
-                        "evaluacion": evaluacion,
-                    }
-                    status.update(label="✅ Análisis completado", state="complete", expanded=False)
+                        supabase.schema("gold").table("evaluaciones").insert({
+                            "cv_estructurado_id":    cv_estructurado_id,
+                            "score_total":           evaluacion.get("score_total", 0),
+                            "score_skills_tecnicos": evaluacion.get("score_skills_tecnicos"),
+                            "score_experiencia":     evaluacion.get("score_experiencia"),
+                            "score_educacion":       evaluacion.get("score_educacion"),
+                            "score_idiomas":         evaluacion.get("score_idiomas"),
+                            "score_fit_general":     evaluacion.get("score_fit_general"),
+                            "recomendacion":         evaluacion.get("recomendacion", "descartar"),
+                            "justificacion_general": evaluacion.get("justificacion_general"),
+                            "fortalezas":            evaluacion.get("fortalezas", []),
+                            "brechas":               evaluacion.get("brechas", []),
+                        }).execute()
 
-        # --- Mostrar último resultado ---
-        if st.session_state.ultimo_resultado:
-            resultado = st.session_state.ultimo_resultado
-            cv_json   = resultado["cv_json"]
-            evaluacion = resultado["evaluacion"]
+                        nuevos_resultados.append({"cv_json": cv_json, "evaluacion": evaluacion})
+                        status.update(label=f"✅ {archivo.name}", state="complete", expanded=False)
+
+                st.session_state.resultados_sesion = nuevos_resultados
+                st.success(f"✅ {len(nuevos_resultados)}/{total} CVs procesados y persistidos.")
+
+        # --- Ranking + detalle por candidato ---
+        if st.session_state.resultados_sesion:
+            resultados = sorted(
+                st.session_state.resultados_sesion,
+                key=lambda r: r["evaluacion"].get("score_total", 0),
+                reverse=True,
+            )
 
             st.divider()
-            nombre_candidato = cv_json.get("nombre_candidato", "Desconocido")
-            st.subheader(f"Resultados para: {nombre_candidato}")
+            st.markdown("## Ranking de candidatos")
 
-            # --- Score total + decisión ---
-            score         = evaluacion.get("score_total", 0)
-            recomendacion = evaluacion.get("recomendacion", "descartar")
+            DECISION_COLOR = {
+                "prioridad":   "🟢",
+                "entrevistar": "🟡",
+                "considerar":  "🟠",
+                "descartar":   "🔴",
+            }
 
-            if recomendacion in ["prioridad", "entrevistar"]:
-                color = "green"
-            elif recomendacion == "considerar":
-                color = "orange"
-            else:
-                color = "red"
+            ranking_filas = []
+            for pos, r in enumerate(resultados, start=1):
+                ev  = r["evaluacion"]
+                rec = ev.get("recomendacion", "descartar")
+                ranking_filas.append({
+                    "#":              pos,
+                    "Candidato":      r["cv_json"].get("nombre_candidato", "—"),
+                    "Score":          ev.get("score_total", 0),
+                    "Skills":         ev.get("score_skills_tecnicos", "—"),
+                    "Experiencia":    ev.get("score_experiencia", "—"),
+                    "Educación":      ev.get("score_educacion", "—"),
+                    "Idiomas":        ev.get("score_idiomas", "—"),
+                    "Fit":            ev.get("score_fit_general", "—"),
+                    "Decisión":       f"{DECISION_COLOR.get(rec, '')} {rec.capitalize()}",
+                })
+            st.dataframe(ranking_filas, use_container_width=True, hide_index=True)
 
-            h_col1, h_col2 = st.columns(2)
-            h_col1.metric("Score de Compatibilidad", f"{score}/100")
-            h_col2.markdown(f"**Decisión:** :{color}[{recomendacion.capitalize()}]")
+            st.divider()
+            st.markdown("## Detalle por candidato")
+            for r in resultados:
+                cv_json   = r["cv_json"]
+                evaluacion = r["evaluacion"]
+                nombre    = cv_json.get("nombre_candidato", "Desconocido")
+                score     = evaluacion.get("score_total", 0)
+                rec       = evaluacion.get("recomendacion", "descartar")
 
-            # --- Desglose por dimensión ---
-            st.markdown("### Desglose por dimensión")
-            dimensiones = [
-                ("🛠️ Skills técnicos",  evaluacion.get("score_skills_tecnicos")),
-                ("💼 Experiencia",       evaluacion.get("score_experiencia")),
-                ("🎓 Educación",         evaluacion.get("score_educacion")),
-                ("🌐 Idiomas",           evaluacion.get("score_idiomas")),
-                ("🎯 Fit general",       evaluacion.get("score_fit_general")),
-            ]
-            d_cols = st.columns(len(dimensiones))
-            for col, (label, val) in zip(d_cols, dimensiones):
-                if val is not None:
-                    col.metric(label, f"{val:.0f}/100")
-                else:
-                    col.metric(label, "—")
+                with st.expander(f"{DECISION_COLOR.get(rec, '')} {nombre} — {score}/100"):
+                    # Desglose por dimensión
+                    dimensiones = [
+                        ("🛠️ Skills",      evaluacion.get("score_skills_tecnicos")),
+                        ("💼 Experiencia", evaluacion.get("score_experiencia")),
+                        ("🎓 Educación",   evaluacion.get("score_educacion")),
+                        ("🌐 Idiomas",     evaluacion.get("score_idiomas")),
+                        ("🎯 Fit",         evaluacion.get("score_fit_general")),
+                    ]
+                    d_cols = st.columns(len(dimensiones))
+                    for col, (label, val) in zip(d_cols, dimensiones):
+                        col.metric(label, f"{val:.0f}/100" if val is not None else "—")
 
-            # --- XAI ---
-            st.markdown("### Auditoría de Decisión (XAI)")
-            fortalezas = evaluacion.get("fortalezas", [])
-            brechas    = evaluacion.get("brechas", [])
+                    fortalezas = evaluacion.get("fortalezas", [])
+                    brechas    = evaluacion.get("brechas", [])
+                    st.success("**🚀 Fortalezas:**\n\n" + "\n".join(f"• {f}" for f in fortalezas))
+                    st.warning("**⚠️ Brechas:**\n\n"    + "\n".join(f"• {b}" for b in brechas))
+                    st.info(f"**📊 Justificación:**\n\n{evaluacion.get('justificacion_general', 'No especificada.')}")
 
-            st.success("**🚀 Fortalezas:**\n\n" + "\n".join(f"• {f}" for f in fortalezas))
-            st.warning("**⚠️ Brechas:**\n\n"    + "\n".join(f"• {b}" for b in brechas))
-            st.info(f"**📊 Justificación:**\n\n{evaluacion.get('justificacion_general', 'No especificada.')}")
-
-            with st.expander("Ver JSON estructurado del CV"):
-                st.json(cv_json)
+                    with st.expander("Ver JSON estructurado del CV"):
+                        st.json(cv_json)
 
 # ==========================================
 # TAB 3 — HISTORIAL
