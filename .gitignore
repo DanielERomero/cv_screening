@@ -31,6 +31,11 @@ __pycache__/
 *$py.class
 
 # ========================
+# Claude Code
+# ========================
+.claude/
+
+# ========================
 # Editores e IDEs (VS Code, PyCharm, etc)
 # ========================
 .vscode/
