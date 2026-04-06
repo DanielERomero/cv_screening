@@ -132,7 +132,7 @@ Consulta todas las evaluaciones guardadas en Supabase. Incluye:
 
 ## Modelo LLM y costos
 
-- **Modelo:** `gpt-4.1` vía GitHub Models (Azure inference endpoint)
+- **Modelo:** `gpt-4.1` vía GitHub Models 
 - **Endpoint:** `https://models.inference.ai.azure.com`
 - **Tarifas de referencia usadas para el cálculo:**
 
