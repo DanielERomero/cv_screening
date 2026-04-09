@@ -69,7 +69,7 @@ def interactuar_con_gpt(prompt: str, rol_sistema: str) -> dict:
                 {"role": "user", "content": prompt}
             ],
             model=MODELO_NUBE,
-            temperature=0.1, # Temperatura baja para que sea analítico, no creativo
+            temperature= 0, # Temperatura baja para que sea analítico, no creativo
             response_format={"type": "json_object"} # Forzamos la salida a JSON puro
         )
         contenido = response.choices[0].message.content
@@ -119,7 +119,7 @@ def evaluar_candidato(cv_json: dict, job_spec: str) -> dict:
     return resultado
 
 # ==========================================
-# 3. PIPELINE PRINCIPAL (Tu script de ejecución)
+# 3. PIPELINE PRINCIPAL 
 # ==========================================
 
 def procesar_candidato(ruta_pdf: str, job_spec: str, proceso_nombre: str = "Sin nombre"):
